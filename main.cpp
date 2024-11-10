@@ -1,4 +1,14 @@
 #include <bits/stdc++.h>
+#include <chrono>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
+#include <unordered_map>
+#include <random>
+#include <algorithm>
 
 /// HASHAVIMO GENERATORIUS
 std::string toHexString(uint64_t value, int width = 16) {
@@ -52,6 +62,7 @@ private:
     int balance;
 
 public:
+    User() {}  // Default constructor   
     User(const std::string& name, const std::string& publicKey, int balance) 
         : name(name), publicKey(publicKey), balance(balance) {}
 
@@ -71,10 +82,13 @@ std::vector<User> generateUsers(int numUsers = 1000) {
         std::string name = "Vartotojas" + std::to_string(i);
         std::string publicKey = hashavimoGeneratorius(name);
         int balance = rand() % 1000000 + 100;
-        users.emplace_back(name, publicKey, balance);
+
+        // Explicitly create a User object and add it to the vector
+        users.push_back(User(name, publicKey, balance));
     }
     return users;
 }
+
 
 /// TRANSAKCIJOS KLASE
 class Transaction {
@@ -138,7 +152,6 @@ private:
     time_t miningDate;
     int height;
 
-    /// MERKLE MEDZIO SAKNIES APSKAICIAVIMO FUNKCIJA
     std::string calculateMerkleRoot() const {
         if (transactions.empty()) return "";
         std::vector<std::string> merkle;
@@ -176,13 +189,27 @@ public:
     const std::vector<Transaction>& getTransactions() const { return transactions; }
     int getHeight() const { return height; }
 
-    void mineBlock(std::ostream& out) {
+    bool tryMining(int maxAttempts, int timeLimitSeconds) {
         std::string target(difficulty, '0');
-        do {
+        auto startTime = std::chrono::steady_clock::now();
+        int attempts = 0;
+
+        while (attempts < maxAttempts) {
             nonce++;
             blockHash = calculateHash();
-        } while (blockHash.substr(0, difficulty) != target);
-        out << "Blokas iskastas su hash'u: " << blockHash << std::endl;
+            attempts++;
+
+            if (blockHash.substr(0, difficulty) == target) {
+                std::cout << "Blokas iskastas su hash'u: " << blockHash << " per " << attempts << " bandymus." << std::endl;
+                return true;
+            }
+
+            auto currentTime = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(currentTime - startTime).count() >= timeLimitSeconds) {
+                break;
+            }
+        }
+        return false;
     }
 
     void printBlock(std::ostream& out) const {
@@ -203,143 +230,129 @@ public:
     }
 };
 
-/// BLOCKCHAINO KLASE
+/// BLOCKCHAIN KLASE
 class Blockchain {
 private:
-    std::vector<Block> chain;
-    std::unordered_map<std::string, User*> userMap;
-    std::unordered_map<std::string, Transaction> allTransactions;
+    std::vector<Block> blocks;
+    int difficulty;
+    std::map<std::string, User> users;
+
 public:
-    Blockchain(const std::vector<User>& users) {
-        for (const auto& user : users) {
-            userMap[user.getPublicKey()] = new User(user);
+    Blockchain(const std::vector<User>& initialUsers, int difficulty = 4) : difficulty(difficulty) {
+        for (const auto& user : initialUsers) {
+            users[user.getPublicKey()] = user;
         }
+
+        Block genesisBlock("0", {}, 0, difficulty);
+        blocks.push_back(genesisBlock);
     }
-    std::string getLastBlockHash() const {
-        return chain.empty() ? "0" : chain.back().getBlockHash();
-    }
-    void addBlock(Block& block, std::vector<Transaction>& pendingTransactions, std::ostream& out) {
-        block.mineBlock(out);
-        chain.push_back(block);
-        block.printBlock(out);
-        for (const auto& tx : block.getTransactions()) {
-            allTransactions[tx.getTransactionID()] = tx;
-            User* sender = userMap[tx.getSender()];
-            User* receiver = userMap[tx.getReceiver()];
-            if (sender && receiver && sender->getBalance() >= tx.getAmount()) {
-                sender->updateBalance(-tx.getAmount());
-                receiver->updateBalance(tx.getAmount());
+
+    void addBlock(Block& newBlock, std::vector<Transaction>& transactions, std::ostream& out) {
+        for (const auto& tx : newBlock.getTransactions()) {
+            User& sender = users[tx.getSender()];
+            User& receiver = users[tx.getReceiver()];
+
+            if (sender.getBalance() >= tx.getAmount()) {
+                sender.updateBalance(-tx.getAmount());
+                receiver.updateBalance(tx.getAmount());
+
+                transactions.erase(std::remove(transactions.begin(), transactions.end(), tx), transactions.end());
             }
         }
-        auto end = std::remove_if(pendingTransactions.begin(), pendingTransactions.end(),
-                                  [&block](const Transaction& tx) {
-                                      return std::find(block.getTransactions().begin(), block.getTransactions().end(), tx) != block.getTransactions().end();
-                                  });
-        pendingTransactions.erase(end, pendingTransactions.end());
-    }
-    void listAllTransactions() const;
-    void listAllBlocks() const;
-    void listAllAccounts() const;
-};
 
-// VISU TRANSKACIJU SPAUSINDIMO FUNKCIJA
-void Blockchain::listAllTransactions() const {
-    std::cout << "Visos transakcijos:" << std::endl;
-    for (const auto& [id, transaction] : allTransactions) {
-        std::cout << "Transakcijos ID: " << id << std::endl;
+        blocks.push_back(newBlock);
+        newBlock.printBlock(out);
     }
-    std::cout << "Iveskite Transakcijos ID perziureti issamia informacija arba 'exit' kad grizti i pagrindini meniu: ";
-    std::string transactionID;
-    std::cin >> transactionID;
-    if (transactionID != "exit") {
-        auto it = allTransactions.find(transactionID);
-        if (it != allTransactions.end()) {
-            it->second.printTransaction(std::cout);
-        } else {
-            std::cout << "Transakcija nerasta." << std::endl;
+
+    const std::string& getLastBlockHash() const { return blocks.back().getBlockHash(); }
+    int getDifficulty() const { return difficulty; }
+
+    void listAllTransactions() const {
+        for (const auto& block : blocks) {
+            for (const auto& tx : block.getTransactions()) {
+                tx.printTransaction(std::cout);
+            }
         }
     }
-}
 
-// VISU BLOKU SPAUSINDIMO FUNKCIJA
-void Blockchain::listAllBlocks() const {
-    std::cout << "Visi blokai:" << std::endl;
-    for (size_t i = 0; i < chain.size(); ++i) {
-        std::cout << "Blokas " << i + 1 << std::endl;
-    }
-    std::cout << "Iveskite bloko numeri perziureti issamia informacija arba '0' kad grizti i pagrindini meniu: ";
-    int blockNumber;
-    std::cin >> blockNumber;
-    if (blockNumber > 0 && blockNumber <= chain.size()) {
-        chain[blockNumber - 1].printBlock(std::cout);
-    } else if (blockNumber != 0) {
-        std::cout << "Neteisingas bloko numeris." << std::endl;
+    void listAllBlocks() const {
+        for (const auto& block : blocks) {
+            block.printBlock(std::cout);
+        }
     }
 
-}
-// VISU PASKYRU SPAUSINDIMO FUNKCIJA
-void Blockchain::listAllAccounts() const {
-    std::cout << "Visos paskyros:" << std::endl;
-    for (const auto& [publicKey, user] : userMap) {
-        user->printUser(std::cout);
+    void listAllAccounts() const {
+        for (const auto& [publicKey, user] : users) {
+            user.printUser(std::cout);
+        }
     }
-    std::cout << "---------------------------------------------" << std::endl;
-}
+};
 
-/// PAGRINDINE FUNKCIJA
+/// MAIN
 int main() {
     srand(static_cast<unsigned int>(time(0)));
-    /// BLOKU SPAUSDINIMO FAILAS
     std::ofstream outFile("blokai.txt");
 
     std::vector<User> users = generateUsers(1000);
     Blockchain blockchain(users);
     int blockHeight = 1;
+    int maxAttempts = 100000;
+    int timeLimitSeconds = 5;  
 
     while (true) {
-        std::vector<Transaction> transactions = generateTransactions(users, 10000);
+        
+        std::vector<Transaction> transactions = generateTransactions(users, 100);
 
         while (!transactions.empty()) {
-            int transactionCount = std::min(100, static_cast<int>(transactions.size()));
-            std::vector<Transaction> selectedTransactions = selectRandomTransactions(transactions, transactionCount);
-            Block newBlock(blockchain.getLastBlockHash(), selectedTransactions, blockHeight++);
-            blockchain.addBlock(newBlock, transactions, outFile);
+            bool blockMined = false; 
+
+            while (!blockMined) {
+                std::vector<Block> candidates;
+
+                for (int i = 0; i < 5; ++i) {
+                    std::vector<Transaction> selectedTransactions = selectRandomTransactions(transactions, 100);
+                    Block candidateBlock(blockchain.getLastBlockHash(), selectedTransactions, blockHeight, blockchain.getDifficulty());
+                    candidates.push_back(candidateBlock);
+                }
+
+                for (auto& candidate : candidates) {
+                    if (candidate.tryMining(maxAttempts, timeLimitSeconds)) {
+                        blockchain.addBlock(candidate, transactions, outFile);
+                        blockHeight++;
+                        blockMined = true;
+                        break;  
+                    }
+                }
+
+                if (!blockMined) {
+                    maxAttempts *= 2;
+                    timeLimitSeconds += 2;
+                    std::cout << "No block mined, increasing attempt count and time limit." << std::endl;
+                }
+            }
         }
 
-        /// MENIU
+        // User menu for further interactions
         while (true) {
-            std::cout << std::endl;
-            std::cout << "Meniu pasirinkimai:" << std::endl;
-            std::cout << "1. Perziureti visas transakcijas" << std::endl;
-            std::cout << "2. Perziureti visus blokus" << std::endl;
-            std::cout << "3. Generuoti 1000 nauju naudotoju ir 10000 nauju transkaciju" << std::endl;
-            std::cout << "4. Perziureti visas paskyras" << std::endl;
-            std::cout << "0. Iseiti" << std::endl;
-            std::cout << "Pasirinkite: ";
-
+            std::cout << "\nMenu options:\n1. View all transactions\n2. View all blocks\n3. Generate 1000 new users and 10000 new transactions\n4. View all accounts\n0. Exit\nChoose: ";
             int choice;
             std::cin >> choice;
 
             if (choice == 1) {
                 blockchain.listAllTransactions();
-            } 
-            else if (choice == 2) {
+            } else if (choice == 2) {
                 blockchain.listAllBlocks();
-            } 
-            else if (choice == 3) {
+            } else if (choice == 3) {
                 std::vector<User> newUsers = generateUsers(1000);
                 users.insert(users.end(), newUsers.begin(), newUsers.end());
                 break;
-            } 
-            else if (choice == 4) {
+            } else if (choice == 4) {
                 blockchain.listAllAccounts();
-            } 
-            else if (choice == 0) {
+            } else if (choice == 0) {
                 outFile.close();
                 return 0;
-            } 
-            else {
-                std::cout << "Blogas pasirinkimas. Bandykite is naujo." << std::endl;
+            } else {
+                std::cout << "Invalid choice. Please try again." << std::endl;
             }
         }
     }
